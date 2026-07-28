@@ -6,6 +6,7 @@ import FundFeesModule from './components/modules/FundFeesModule'
 import USStreamModule from './components/modules/USStreamModule'
 import WAStreamModule from './components/modules/WAStreamModule'
 import SensitivityMatrix from './components/modules/SensitivityMatrix'
+import FundModelSchedule from './components/modules/FundModelSchedule'
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('fund-fees')
@@ -22,12 +23,17 @@ export default function App() {
     stepDownBase: 'committed',
     stepDownStartYear: 6,
     orgFeeRate: 0.01,
+    orgFeeBase: 'committed',
     opexYears1to5Rate: 0.005,
     opexYears1to5Base: 'committed',
     opexYears6to10Rate: 0.005,
     opexYears6to10Base: 'committed',
     hurdle: 0.06,
     carry: 0.20,
+    // Global exit configuration — applies to both streams
+    exitTiming: 'holding', // 'holding' | 'fixedYear'
+    fixedExitYear: 5,
+    exitTranches: 1,
   })
 
   // US Stream Configuration
@@ -35,12 +41,12 @@ export default function App() {
     streamAllocationPct: 0.40,
     dealsPerYear: 2,
     totalDeals: 5,
+    investingPeriod: 5,
     holdingYearsMin: 4,
     holdingYearsMax: 6,
     equityMoic: 3.0,
-    debtRate: 0.125,
+    debtTotalRate: 0.125,
     debtCashRate: 0.08,
-    debtPikRate: 0.045,
     votingSharesRate: 0.09,
     prefEquityRate: 0.08,
     prefEquityMethod: 'compound',
@@ -58,6 +64,7 @@ export default function App() {
     streamAllocationPct: 0.60,
     dealsPerYear: 2,
     dealCap: 6,
+    investingPeriod: 5,
     holdingYearsMin: 4,
     holdingYearsMax: 6,
     baseMoic: 2.0,
@@ -65,26 +72,16 @@ export default function App() {
     equityAllocation: 0.30,
   })
 
-  // Calculate results
   const [results, setResults] = useState(null)
 
   useEffect(() => {
     const modelResults = calculateCompleteFundModel(fundConfig, usConfig, waConfig)
     setResults(modelResults)
-    console.log('Model recalculated:', modelResults)
   }, [fundConfig, usConfig, waConfig])
 
-  const handleFundConfigChange = (newConfig) => {
-    setFundConfig({ ...fundConfig, ...newConfig })
-  }
-
-  const handleUSConfigChange = (newConfig) => {
-    setUSConfig({ ...usConfig, ...newConfig })
-  }
-
-  const handleWAConfigChange = (newConfig) => {
-    setWAConfig({ ...waConfig, ...newConfig })
-  }
+  const handleFundConfigChange = (newConfig) => setFundConfig({ ...fundConfig, ...newConfig })
+  const handleUSConfigChange = (newConfig) => setUSConfig({ ...usConfig, ...newConfig })
+  const handleWAConfigChange = (newConfig) => setWAConfig({ ...waConfig, ...newConfig })
 
   const handleTestMath = () => {
     console.clear()
@@ -93,7 +90,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {/* Header */}
+      {/* Page Title (scrolls away, not sticky) */}
       <div className="bg-white border-b border-gray-200 p-6">
         <div className="max-w-7xl mx-auto">
           <h1 className="text-3xl font-bold text-gray-900">Mirepa Fund Model Dashboard</h1>
@@ -107,48 +104,39 @@ export default function App() {
         </div>
       </div>
 
-      {/* Performance Strip */}
-      {results && <PerformanceStrip results={results} />}
+      {/* STICKY HEADER: KPI strip + Tab nav frozen together */}
+      <div className="sticky top-0 z-50 shadow-md">
+        {results && <PerformanceStrip results={results} />}
+        <ControlTabs activeTab={activeTab} setActiveTab={setActiveTab} />
+      </div>
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto p-6">
-        {/* Tabs Navigation */}
-        <ControlTabs activeTab={activeTab} setActiveTab={setActiveTab} />
-
-        {/* Tab Content */}
-        <div className="mt-6 bg-white rounded-lg shadow">
+        <div className="bg-white rounded-lg shadow">
           {activeTab === 'fund-fees' && (
-            <FundFeesModule
-              config={fundConfig}
-              onChange={handleFundConfigChange}
-              results={results}
-            />
+            <FundFeesModule config={fundConfig} onChange={handleFundConfigChange} results={results} />
           )}
 
           {activeTab === 'us-deals' && (
-            <USStreamModule
-              config={usConfig}
-              onChange={handleUSConfigChange}
-              results={results?.usStream}
-            />
+            <USStreamModule config={usConfig} onChange={handleUSConfigChange} results={results?.usStream} />
           )}
 
           {activeTab === 'wa-deals' && (
-            <WAStreamModule
-              config={waConfig}
-              onChange={handleWAConfigChange}
-              results={results?.waStream}
-            />
+            <WAStreamModule config={waConfig} onChange={handleWAConfigChange} results={results?.waStream} />
           )}
 
-          {activeTab === 'sensitivity' && <SensitivityMatrix results={results} />}
+          {activeTab === 'sensitivity' && (
+            <SensitivityMatrix fundConfig={fundConfig} usConfig={usConfig} waConfig={waConfig} results={results} />
+          )}
+
+          {activeTab === 'fund-model' && <FundModelSchedule results={results} />}
         </div>
       </div>
 
       {/* Footer */}
       <div className="bg-gray-100 border-t border-gray-200 p-6 mt-12">
         <div className="max-w-7xl mx-auto text-center text-gray-600 text-sm">
-          <p>Mirepa Capital Group | Fund Modeling Dashboard v1.0</p>
+          <p>Mirepa Capital Group | Fund Modeling Dashboard v3</p>
         </div>
       </div>
     </div>
