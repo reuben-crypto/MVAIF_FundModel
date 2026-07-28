@@ -481,7 +481,7 @@ export function calculateAUMSchedule(usReturns, waReturns, fundLife, writeOffsBy
 
     const unrealizedFV = allDeals.reduce((sum, d) => sum + getDealUnrealizedValue(d, year, d.stream), 0);
 
-    aumSchedule[year] = Math.max(0, cumulativeInvested - cumulativeDistributed + unrealizedFV - cumulativeWriteOffs);
+    aumSchedule[year] = Math.max(0, cumulativeInvested - cumulativeDistributed - cumulativeWriteOffs);
   }
 
   return aumSchedule;
