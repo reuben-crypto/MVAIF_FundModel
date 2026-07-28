@@ -1,23 +1,14 @@
 /**
- * Mirepa Fund Modeling Math Engine — v2
- * Deal-level cash flow scheduling, dynamic AUM/NAV, staggered exits, true IRR.
- * Pure functions, no side effects.
- *
- * KEY CONCEPT: Everything is built around per-deal annual cash flow schedules.
- * These get aggregated into stream-level and fund-level annual cash flow arrays,
- * from which IRR is computed properly (not approximated).
+ * Mirepa Fund Modeling Math Engine — v3
+ * Deal-level cash flow scheduling, dynamic AUM/NAV, staggered exits, true IRR,
+ * connected debt total/cash/PIK rates, and annual schedule table generation.
  */
 
 // ============================================================================
 // 0. UTILITIES
 // ============================================================================
 
-/**
- * True IRR via Newton-Raphson on an array of annual cash flows.
- * flows[0] is year 0, flows[1] is year 1, etc. Negative = outflow, positive = inflow.
- */
 export function calculateIRR(flows, guess = 0.15) {
-  // Guard: no real investment or no real return
   const hasOutflow = flows.some((f) => f < 0);
   const hasInflow = flows.some((f) => f > 0);
   if (!hasOutflow || !hasInflow) return 0;
@@ -30,11 +21,11 @@ export function calculateIRR(flows, guess = 0.15) {
       npv += flows[t] / Math.pow(1 + rate, t);
       dnpv += (-t * flows[t]) / Math.pow(1 + rate, t + 1);
     }
-    if (Math.abs(npv) < 1) break; // converged (within $1)
+    if (Math.abs(npv) < 1) break;
     if (dnpv === 0) break;
     const newRate = rate - npv / dnpv;
     if (newRate <= -0.99) {
-      rate = -0.5; // reset if diverging toward -100%
+      rate = -0.5;
       continue;
     }
     rate = newRate;
@@ -42,21 +33,17 @@ export function calculateIRR(flows, guess = 0.15) {
   return rate;
 }
 
-/** Merge a { year: amount } map into an existing map (adds values). */
 function addCashFlow(map, year, amount) {
   map[year] = (map[year] || 0) + amount;
 }
 
-/** Convert a { year: amount } map into a dense array starting at year 0. */
 function cashFlowMapToArray(map, fundLife) {
-  const arr = new Array(fundLife + 1).fill(0); // years 0..fundLife inclusive
+  const arr = new Array(fundLife + 1).fill(0);
   Object.keys(map).forEach((yearStr) => {
     const year = Number(yearStr);
     if (year >= 0 && year <= fundLife) {
       arr[year] += map[year];
     } else if (year > fundLife) {
-      // Exit tranches that spill past fund life still get counted at the final year
-      // so cash isn't lost from the IRR calc.
       arr[fundLife] += map[year];
     }
   });
@@ -67,11 +54,6 @@ function cashFlowMapToArray(map, fundLife) {
 // 1. DEAL SCHEDULE GENERATION
 // ============================================================================
 
-/**
- * Spreads deals evenly across the investing period based on dealsPerYear,
- * up to totalDeals (or dealCap for WA). Any remainder is dumped in the final
- * investing year.
- */
 export function generateDealSchedule(streamCapital, dealsPerYear, totalDeals, investingPeriod) {
   const deals = [];
   let dealsRemaining = totalDeals;
@@ -91,46 +73,40 @@ export function generateDealSchedule(streamCapital, dealsPerYear, totalDeals, in
   return deals.map((d) => ({ ...d, investedAmount: avgDealSize }));
 }
 
-/** Determines exit year for a deal based on stream-level exit configuration. */
 function getExitYear(investmentYear, holdingYears, exitConfig) {
-  if (exitConfig.exitTiming === 'fixedYear') {
+  if (exitConfig && exitConfig.exitTiming === 'fixedYear') {
     return exitConfig.fixedExitYear;
   }
-  return investmentYear + holdingYears; // default: 'holding'
+  return investmentYear + holdingYears;
 }
 
-/** Returns the array of years over which an exit is tranched. */
 function getTrancheYears(exitYear, tranches) {
   const count = Math.max(1, tranches || 1);
   return Array.from({ length: count }, (_, i) => exitYear + i);
 }
 
 // ============================================================================
-// 2. US DEAL CASH FLOW BUILDER (Sponsored Search Structure)
+// 2. US DEAL CASH FLOW BUILDER
+// Debt is now specified as TOTAL rate + CASH rate; PIK = total - cash.
 // ============================================================================
 
-/**
- * Builds the full annual cash flow schedule for a single US deal:
- * - Outflow at investment
- * - Annual cash interest on debt tranche during hold
- * - PIK capitalizes on debt, realized (with principal) at exit
- * - Preferred equity accrues (compound/simple), capitalized, realized at exit
- * - Voting shares realized at exit via MOIC
- * - Exit proceeds spread across tranche years per exitConfig
- */
 export function buildUSDealCashFlows(deal, config, exitConfig) {
   const {
     holdingYearsMin = 4,
     holdingYearsMax = 6,
     equityMoic = 3.0,
+    debtTotalRate = 0.125,
     debtCashRate = 0.08,
-    debtPikRate = 0.045,
     votingSharesRate = 0.09,
     prefEquityRate = 0.08,
     prefEquityMethod = 'compound',
     debtAllocation = 0.50,
     equityAllocation = 0.50,
   } = config;
+
+  // PIK is derived — never set directly. Clamp at 0 so an invalid cash rate
+  // (higher than total) doesn't produce negative PIK.
+  const debtPikRate = Math.max(0, debtTotalRate - debtCashRate);
 
   const invested = deal.investedAmount;
   const debtTranche = invested * debtAllocation;
@@ -141,28 +117,22 @@ export function buildUSDealCashFlows(deal, config, exitConfig) {
   const holdingYears = Math.round((holdingYearsMin + holdingYearsMax) / 2);
   const investmentYear = deal.investmentYear;
   const exitYear = getExitYear(investmentYear, holdingYears, exitConfig);
-  const trancheYears = getTrancheYears(exitYear, exitConfig.tranches);
+  const trancheYears = getTrancheYears(exitYear, exitConfig?.tranches);
 
   const cashFlows = {};
-
-  // Capital outflow at investment
   addCashFlow(cashFlows, investmentYear, -invested);
 
-  // Annual cash interest on debt, paid each year during the hold
   const cashInterestPerYear = debtTranche * debtCashRate;
   for (let y = investmentYear + 1; y <= exitYear; y++) {
     addCashFlow(cashFlows, y, cashInterestPerYear);
   }
 
-  // PIK capitalizes on the debt principal, realized at exit
   const pikAccrued = debtTranche * (Math.pow(1 + debtPikRate, holdingYears) - 1);
   const debtExitAmount = debtTranche + pikAccrued;
 
-  // Preferred equity accrues and capitalizes, realized at exit
   const prefResult = compoundPreferredEquity(prefAmt, prefEquityRate, holdingYears, prefEquityMethod);
   const prefExitAmount = prefResult.totalAccrued;
 
-  // Voting shares realized at exit via MOIC
   const votingExitAmount = votingAmt * equityMoic;
 
   const totalExitAmount = debtExitAmount + prefExitAmount + votingExitAmount;
@@ -179,6 +149,8 @@ export function buildUSDealCashFlows(deal, config, exitConfig) {
     equityTranche,
     votingAmt,
     prefAmt,
+    debtTotalRate,
+    debtCashRate,
     debtPikRate,
     prefEquityRate,
     prefEquityMethod,
@@ -213,12 +185,11 @@ export function buildWADealCashFlows(deal, config, exitConfig) {
   const holdingYears = Math.round((holdingYearsMin + holdingYearsMax) / 2);
   const investmentYear = deal.investmentYear;
   const exitYear = getExitYear(investmentYear, holdingYears, exitConfig);
-  const trancheYears = getTrancheYears(exitYear, exitConfig.tranches);
+  const trancheYears = getTrancheYears(exitYear, exitConfig?.tranches);
 
   const cashFlows = {};
   addCashFlow(cashFlows, investmentYear, -invested);
 
-  // Simplified: whole deal exits at baseMoic (no interim cash yield modeled for WA yet)
   const totalExitAmount = invested * baseMoic;
   const perTranche = totalExitAmount / trancheYears.length;
   trancheYears.forEach((y) => addCashFlow(cashFlows, y, perTranche));
@@ -238,15 +209,16 @@ export function buildWADealCashFlows(deal, config, exitConfig) {
 }
 
 // ============================================================================
-// 4. PREFERRED EQUITY / DEBT COMPOUNDING HELPERS (unchanged math, still used)
+// 4. COMPOUNDING HELPERS
 // ============================================================================
 
-export function compoundDebtInterest(principal, totalRate, cashRate, pikRate, holdingYears) {
+export function compoundDebtInterest(principal, totalRate, cashRate, holdingYears) {
+  const pikRate = Math.max(0, totalRate - cashRate);
   const cashInterestPerYear = principal * cashRate;
   const totalCashInterest = cashInterestPerYear * holdingYears;
   const pikInterestAccrued = principal * (Math.pow(1 + pikRate, holdingYears) - 1);
   const totalAtExit = principal + totalCashInterest + pikInterestAccrued;
-  return { principal, cashInterestPerYear, totalCashInterest, pikInterestAccrued, totalAtExit, totalRate };
+  return { principal, cashInterestPerYear, totalCashInterest, pikInterestAccrued, totalAtExit, totalRate, pikRate };
 }
 
 export function compoundPreferredEquity(principal, rate, holdingYears, compoundMethod = 'compound') {
@@ -259,8 +231,7 @@ export function compoundPreferredEquity(principal, rate, holdingYears, compoundM
   return { principal, rate, holdingYears, compoundMethod, totalAccrued, interestGenerated: totalAccrued - principal };
 }
 
-/** Unrealized (mark-to-model) value of a deal at a given year, before exit. */
-function getDealUnrealizedValue(dealCF, year, stream) {
+export function getDealUnrealizedValue(dealCF, year, stream) {
   if (year < dealCF.investmentYear || year >= dealCF.exitYear) return 0;
   const yearsHeld = year - dealCF.investmentYear;
 
@@ -272,31 +243,18 @@ function getDealUnrealizedValue(dealCF, year, stream) {
       yearsHeld,
       dealCF.prefEquityMethod
     ).totalAccrued;
-    // Voting equity marked straight-line toward its exit value (simplification)
     const votingUnrealized =
       dealCF.votingAmt + (dealCF.votingExitAmount - dealCF.votingAmt) * (yearsHeld / dealCF.holdingYears);
     return debtUnrealized + prefUnrealized + votingUnrealized;
   } else {
-    // WA: straight-line mark toward exit value (no interim structure modeled yet)
     return dealCF.invested + (dealCF.totalExitAmount - dealCF.invested) * (yearsHeld / dealCF.holdingYears);
   }
 }
 
 // ============================================================================
-// 5. FUND FEES (with real AUM-vs-committed base selection)
+// 5. FUND FEES
 // ============================================================================
 
-/**
- * Computes fund fees year-by-year. If a fee's base is 'aum', it uses the
- * AUM schedule you pass in (see calculateAUMSchedule). If 'committed', uses
- * flat fundSize.
- *
- * NOTE: Because AUM depends on deployment, and deployment sizing depends on
- * investible capital (which depends on fees), this function is designed to be
- * called TWICE: once with aumSchedule=null (to get a first-pass investible
- * capital for deal sizing), and again with the real aumSchedule (to get
- * accurate reported fees). See calculateCompleteFundModel for the orchestration.
- */
 export function calculateFundFees(fundConfig, aumSchedule = null) {
   const {
     fundSize = 50000000,
@@ -317,7 +275,7 @@ export function calculateFundFees(fundConfig, aumSchedule = null) {
 
   const getBase = (basePref, year) => {
     if (basePref === 'aum' && aumSchedule) return Math.max(0, aumSchedule[year] || 0);
-    return fundSize; // committed capital, or fallback if no AUM schedule yet
+    return fundSize;
   };
 
   const yearlyMgtFees = [];
@@ -325,7 +283,6 @@ export function calculateFundFees(fundConfig, aumSchedule = null) {
   let totalMgtFees = 0;
   let totalOpex = 0;
 
-  // Org fee charged at year 0 (fund close), before any deployment
   const orgFeeBaseAmount = orgFeeBase === 'aum' ? (aumSchedule ? aumSchedule[0] || 0 : 0) : fundSize;
   const orgFee = orgFeeBaseAmount * orgFeeRate;
 
@@ -367,15 +324,15 @@ export function calculateFundFees(fundConfig, aumSchedule = null) {
 }
 
 // ============================================================================
-// 6. STREAM-LEVEL AGGREGATION (deals -> cash flows -> IRR/DPI)
+// 6. STREAM-LEVEL AGGREGATION
 // ============================================================================
 
-export function calculateUSStreamReturns(streamCapital, config, fundLife) {
+export function calculateUSStreamReturns(streamCapital, config, fundLife, exitConfig) {
   const { dealsPerYear = 2, totalDeals = 5, investingPeriod = 5 } = config;
-  const exitConfig = config.exitConfig || { exitTiming: 'holding', tranches: 1, fixedExitYear: null };
+  const effectiveExitConfig = exitConfig || config.exitConfig || { exitTiming: 'holding', tranches: 1, fixedExitYear: null };
 
   const deals = generateDealSchedule(streamCapital, dealsPerYear, totalDeals, investingPeriod);
-  const dealCashFlows = deals.map((d) => buildUSDealCashFlows(d, config, exitConfig));
+  const dealCashFlows = deals.map((d) => buildUSDealCashFlows(d, config, effectiveExitConfig));
 
   const combinedMap = {};
   dealCashFlows.forEach((dcf) => {
@@ -386,11 +343,10 @@ export function calculateUSStreamReturns(streamCapital, config, fundLife) {
   const irr = calculateIRR(flowArray);
 
   const totalInvested = streamCapital;
-  const totalGrossProceeds = dealCashFlows.reduce((sum, d) => sum + d.totalExitAmount, 0) +
+  const totalGrossProceeds =
+    dealCashFlows.reduce((sum, d) => sum + d.totalExitAmount, 0) +
     dealCashFlows.reduce((sum, d) => sum + d.cashInterestPerYear * (d.exitYear - d.investmentYear), 0);
   const dpi = totalGrossProceeds / totalInvested;
-
-  // Average per-deal figures for display
   const avgDealSize = streamCapital / totalDeals;
 
   return {
@@ -400,7 +356,7 @@ export function calculateUSStreamReturns(streamCapital, config, fundLife) {
     totalInvested,
     totalGrossProceeds,
     grossIRR: irr,
-    netIRR: irr, // fund-level waterfall applies carry separately
+    netIRR: irr,
     dpi,
     moic: dpi,
     deals: dealCashFlows,
@@ -441,7 +397,6 @@ function calculateSearcherEconomics(dealCashFlows, config) {
   } else if (searcherDebtEconomics === 'option2') {
     debtEconomicValue = totalDebtInvested * 0.005 * avgHoldingYears * 2;
   }
-  // option3: billed to fund expenses, not paid to searcher directly
 
   const carryRate = equityMoic >= searcherCarryThreshold ? searcherCarryAbove : searcherCarryBelow;
 
@@ -455,12 +410,12 @@ function calculateSearcherEconomics(dealCashFlows, config) {
   };
 }
 
-export function calculateWAStreamReturns(streamCapital, config, fundLife) {
+export function calculateWAStreamReturns(streamCapital, config, fundLife, exitConfig) {
   const { dealsPerYear = 2, dealCap = 6, investingPeriod = 5 } = config;
-  const exitConfig = config.exitConfig || { exitTiming: 'holding', tranches: 1, fixedExitYear: null };
+  const effectiveExitConfig = exitConfig || config.exitConfig || { exitTiming: 'holding', tranches: 1, fixedExitYear: null };
 
   const deals = generateDealSchedule(streamCapital, dealsPerYear, dealCap, investingPeriod);
-  const dealCashFlows = deals.map((d) => buildWADealCashFlows(d, config, exitConfig));
+  const dealCashFlows = deals.map((d) => buildWADealCashFlows(d, config, effectiveExitConfig));
 
   const combinedMap = {};
   dealCashFlows.forEach((dcf) => {
@@ -500,7 +455,6 @@ export function calculateWAStreamReturns(streamCapital, config, fundLife) {
 
 // ============================================================================
 // 7. AUM / NAV SCHEDULE
-// AUM(year) = cumulative invested - cumulative distributed + unrealized FV - write-offs
 // ============================================================================
 
 export function calculateAUMSchedule(usReturns, waReturns, fundLife, writeOffsByYear = {}) {
@@ -516,19 +470,16 @@ export function calculateAUMSchedule(usReturns, waReturns, fundLife, writeOffsBy
   let cumulativeWriteOffs = 0;
 
   for (let year = 0; year <= fundLife; year++) {
-    // Capital invested this year, across both streams
     const investedThisYear = allDeals
       .filter((d) => d.investmentYear === year)
       .reduce((s, d) => s + d.invested, 0);
     cumulativeInvested += investedThisYear;
 
-    // Cash distributed this year (positive cash flow entries only)
     const distributedThisYear = allDeals.reduce((sum, d) => sum + (d.cashFlows[year] > 0 ? d.cashFlows[year] : 0), 0);
     cumulativeDistributed += distributedThisYear;
 
     cumulativeWriteOffs += writeOffsByYear[year] || 0;
 
-    // Unrealized fair value of deals still held
     const unrealizedFV = allDeals.reduce((sum, d) => sum + getDealUnrealizedValue(d, year, d.stream), 0);
 
     aumSchedule[year] = Math.max(0, cumulativeInvested - cumulativeDistributed + unrealizedFV - cumulativeWriteOffs);
@@ -555,7 +506,6 @@ export function calculateFundWaterfall(usStreamReturns, waStreamReturns, fundCon
   const gpCarry = excessAboveHurdle * carry;
   const lpShare = totalGrossProceeds - gpCarry - (feeResult ? feeResult.totalFees : 0);
 
-  // Combine US + WA annual cash flow maps into one fund-level array for true fund IRR
   const combinedMap = {};
   Object.keys(usStreamReturns.cashFlowMap).forEach((y) =>
     addCashFlow(combinedMap, Number(y), usStreamReturns.cashFlowMap[y])
@@ -588,13 +538,80 @@ export function calculateFundWaterfall(usStreamReturns, waStreamReturns, fundCon
 }
 
 // ============================================================================
-// 9. COMPLETE MODEL ORCHESTRATION (handles the fee/AUM two-pass approach)
+// 9. ANNUAL SCHEDULE TABLE (powers the "Fund Model" LP-facing view)
+// ============================================================================
+
+export function buildFundScheduleTable(usReturns, waReturns, feeResult, aumSchedule, fundLife) {
+  const allDeals = [
+    ...usReturns.deals.map((d) => ({ ...d, stream: 'us' })),
+    ...waReturns.deals.map((d) => ({ ...d, stream: 'wa' })),
+  ];
+
+  const rows = [];
+  let cumulativeCapitalDeployed = 0;
+  let cumulativeDistributions = 0;
+  let cumulativeFees = 0;
+
+  for (let year = 0; year <= fundLife; year++) {
+    const usCapitalDeployed = usReturns.deals
+      .filter((d) => d.investmentYear === year)
+      .reduce((s, d) => s + d.invested, 0);
+    const waCapitalDeployed = waReturns.deals
+      .filter((d) => d.investmentYear === year)
+      .reduce((s, d) => s + d.invested, 0);
+    const capitalDeployed = usCapitalDeployed + waCapitalDeployed;
+    cumulativeCapitalDeployed += capitalDeployed;
+
+    const mgtFee = year >= 1 ? feeResult.yearlyMgtFees[year - 1] : 0;
+    const opex = year >= 1 ? feeResult.yearlyOpex[year - 1] : 0;
+    const orgFee = year === 0 ? feeResult.totalOrgFee : 0;
+    const feesThisYear = mgtFee + opex + orgFee;
+    cumulativeFees += feesThisYear;
+
+    const usDistributions = usReturns.deals.reduce((s, d) => s + (d.cashFlows[year] > 0 ? d.cashFlows[year] : 0), 0);
+    const waDistributions = waReturns.deals.reduce((s, d) => s + (d.cashFlows[year] > 0 ? d.cashFlows[year] : 0), 0);
+    const distributions = usDistributions + waDistributions;
+    cumulativeDistributions += distributions;
+
+    const unrealizedFV = allDeals.reduce((sum, d) => sum + getDealUnrealizedValue(d, year, d.stream), 0);
+
+    rows.push({
+      year,
+      usCapitalDeployed,
+      waCapitalDeployed,
+      capitalDeployed,
+      cumulativeCapitalDeployed,
+      mgtFee,
+      opex,
+      orgFee,
+      feesThisYear,
+      cumulativeFees,
+      usDistributions,
+      waDistributions,
+      distributions,
+      cumulativeDistributions,
+      unrealizedFV,
+      runningAUM: aumSchedule[year],
+      netCashFlow: distributions - capitalDeployed - feesThisYear,
+    });
+  }
+
+  return rows;
+}
+
+// ============================================================================
+// 10. COMPLETE MODEL ORCHESTRATION
 // ============================================================================
 
 export function calculateCompleteFundModel(fundConfig, usConfig, waConfig) {
   const fundLife = fundConfig.fundLife || 10;
 
-  // PASS 1: size deployment using committed-capital-based investible capital
+  const globalExitConfig = {
+    exitTiming: fundConfig.exitTiming || 'holding',
+    fixedExitYear: fundConfig.fixedExitYear || null,
+    tranches: fundConfig.exitTranches || 1,
+  };
+
   const firstPassFees = calculateFundFees(fundConfig, null);
   const investibleCapital = firstPassFees.investibleCapital;
 
@@ -603,27 +620,25 @@ export function calculateCompleteFundModel(fundConfig, usConfig, waConfig) {
   const usStreamCapital = investibleCapital * usAllocation;
   const waStreamCapital = investibleCapital * waAllocation;
 
-  // Build deal schedules & stream returns (this fixes deal sizes/timing)
-  const usReturns = calculateUSStreamReturns(usStreamCapital, usConfig, fundLife);
-  const waReturns = calculateWAStreamReturns(waStreamCapital, waConfig, fundLife);
+  const usReturns = calculateUSStreamReturns(usStreamCapital, usConfig, fundLife, globalExitConfig);
+  const waReturns = calculateWAStreamReturns(waStreamCapital, waConfig, fundLife, globalExitConfig);
 
-  // Build AUM schedule from the actual deal cash flows
   const aumSchedule = calculateAUMSchedule(usReturns, waReturns, fundLife);
-
-  // PASS 2: recompute fees using the real AUM schedule for accurate reporting
   const feeResult = calculateFundFees(fundConfig, aumSchedule);
 
-  // Fund waterfall using true cash-flow-based IRR
   const waterfall = calculateFundWaterfall(usReturns, waReturns, fundConfig, feeResult);
+  const scheduleTable = buildFundScheduleTable(usReturns, waReturns, feeResult, aumSchedule, fundLife);
 
   return {
     feeAnalysis: feeResult,
     aumSchedule,
+    scheduleTable,
     usStream: usReturns,
     waStream: waReturns,
     fundWaterfall: waterfall,
     summary: {
       fundSize: fundConfig.fundSize,
+      fundLife,
       totalFees: feeResult.totalFees,
       investibleCapital: feeResult.investibleCapital,
       usCapital: usStreamCapital,
@@ -639,11 +654,11 @@ export function calculateCompleteFundModel(fundConfig, usConfig, waConfig) {
 }
 
 // ============================================================================
-// 10. TEST FUNCTION
+// 11. TEST FUNCTION
 // ============================================================================
 
 export function testMathEngine() {
-  console.log('=== TESTING MATH ENGINE v2 ===\n');
+  console.log('=== TESTING MATH ENGINE v3 ===\n');
 
   const fundConfig = {
     fundSize: 50000000,
@@ -653,9 +668,14 @@ export function testMathEngine() {
     orgFeeRate: 0.01,
     orgFeeBase: 'committed',
     opexYears1to5Rate: 0.005,
+    opexYears1to5Base: 'committed',
     opexYears6to10Rate: 0.005,
+    opexYears6to10Base: 'committed',
     hurdle: 0.06,
     carry: 0.20,
+    exitTiming: 'holding',
+    fixedExitYear: null,
+    exitTranches: 1,
   };
 
   const usConfig = {
@@ -668,8 +688,8 @@ export function testMathEngine() {
     equityMoic: 3.0,
     debtAllocation: 0.50,
     equityAllocation: 0.50,
+    debtTotalRate: 0.125,
     debtCashRate: 0.08,
-    debtPikRate: 0.045,
     votingSharesRate: 0.09,
     prefEquityRate: 0.08,
     prefEquityMethod: 'compound',
@@ -678,7 +698,6 @@ export function testMathEngine() {
     searcherCarryThreshold: 3.0,
     searcherCarryBelow: 0.075,
     searcherCarryAbove: 0.10,
-    exitConfig: { exitTiming: 'holding', tranches: 1, fixedExitYear: null },
   };
 
   const waConfig = {
@@ -691,25 +710,20 @@ export function testMathEngine() {
     baseMoic: 2.0,
     debtAllocation: 0.70,
     equityAllocation: 0.30,
-    exitConfig: { exitTiming: 'holding', tranches: 1, fixedExitYear: null },
   };
 
   const model = calculateCompleteFundModel(fundConfig, usConfig, waConfig);
 
   console.log(`Investible Capital: $${(model.summary.investibleCapital / 1e6).toFixed(2)}M`);
-  console.log(`US Capital: $${(model.summary.usCapital / 1e6).toFixed(2)}M`);
-  console.log(`WA Capital: $${(model.summary.waCapital / 1e6).toFixed(2)}M\n`);
+  console.log(`Fund DPI: ${model.summary.fundDPI.toFixed(2)}x, Fund IRR: ${(model.summary.grossIRR * 100).toFixed(1)}%`);
+  console.log(`Final AUM: $${(model.summary.finalAUM / 1e6).toFixed(2)}M\n`);
 
-  console.log(`US Stream DPI: ${model.usStream.dpi.toFixed(2)}x, IRR: ${(model.usStream.grossIRR * 100).toFixed(1)}%`);
-  console.log(`WA Stream DPI: ${model.waStream.dpi.toFixed(2)}x, IRR: ${(model.waStream.grossIRR * 100).toFixed(1)}%\n`);
-
-  console.log(`Fund DPI: ${model.summary.fundDPI.toFixed(2)}x`);
-  console.log(`Fund Gross IRR: ${(model.summary.grossIRR * 100).toFixed(1)}%`);
-  console.log(`GP Carry: $${(model.summary.gpCarry / 1e6).toFixed(2)}M`);
-  console.log(`Final AUM (year ${fundConfig.fundLife}): $${(model.summary.finalAUM / 1e6).toFixed(2)}M\n`);
-
-  console.log('AUM Schedule by year:');
-  model.aumSchedule.forEach((v, y) => console.log(`  Year ${y}: $${(v / 1e6).toFixed(2)}M`));
+  console.log('Schedule table (first 5 rows):');
+  model.scheduleTable.slice(0, 5).forEach((row) => {
+    console.log(
+      `Year ${row.year}: Deployed $${(row.capitalDeployed / 1e6).toFixed(2)}M | Fees $${(row.feesThisYear / 1e6).toFixed(2)}M | Dist $${(row.distributions / 1e6).toFixed(2)}M | AUM $${(row.runningAUM / 1e6).toFixed(2)}M`
+    );
+  });
 
   console.log('\n=== TESTS COMPLETE ===');
 }
