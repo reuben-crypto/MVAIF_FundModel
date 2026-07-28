@@ -479,8 +479,7 @@ export function calculateAUMSchedule(usReturns, waReturns, fundLife, writeOffsBy
 
     cumulativeWriteOffs += writeOffsByYear[year] || 0;
 
-    const unrealizedFV = allDeals.reduce((sum, d) => sum + getDealUnrealizedValue(d, year, d.stream), 0);
-
+    // AUM = deployed capital - distributions - write-offs (excludes unrealized FV)
     aumSchedule[year] = Math.max(0, cumulativeInvested - cumulativeDistributed - cumulativeWriteOffs);
   }
 
@@ -647,19 +646,55 @@ export function calculateCompleteFundModel(fundConfig, usConfig, waConfig) {
     tranches: fundConfig.exitTranches || 1,
   };
 
-  const firstPassFees = calculateFundFees(fundConfig, null);
-  const investibleCapital = firstPassFees.investibleCapital;
-
   const usAllocation = usConfig.streamAllocationPct || 0.40;
   const waAllocation = waConfig.streamAllocationPct || 0.60;
-  const usStreamCapital = investibleCapital * usAllocation;
-  const waStreamCapital = investibleCapital * waAllocation;
 
-  const usReturns = calculateUSStreamReturns(usStreamCapital, usConfig, fundLife, globalExitConfig);
-  const waReturns = calculateWAStreamReturns(waStreamCapital, waConfig, fundLife, globalExitConfig);
+  // ITERATIVE CONVERGENCE
+  // Fees (if base = AUM) depend on AUM, which depends on deployed capital,
+  // which depends on investible capital, which depends on fees. We loop until
+  // investible capital stabilizes to within $1, or give up after a safety cap
+  // of iterations (handles any pathological non-converging configuration).
+  let investibleCapital = fundConfig.fundSize; // starting guess
+  let usStreamCapital = investibleCapital * usAllocation;
+  let waStreamCapital = investibleCapital * waAllocation;
+  let usReturns, waReturns, aumSchedule, feeResult;
 
-  const aumSchedule = calculateAUMSchedule(usReturns, waReturns, fundLife);
-  const feeResult = calculateFundFees(fundConfig, aumSchedule);
+  const MAX_ITERATIONS = 25;
+  let iterations = 0;
+  let converged = false;
+
+  while (iterations < MAX_ITERATIONS) {
+    usReturns = calculateUSStreamReturns(usStreamCapital, usConfig, fundLife, globalExitConfig);
+    waReturns = calculateWAStreamReturns(waStreamCapital, waConfig, fundLife, globalExitConfig);
+
+    aumSchedule = calculateAUMSchedule(usReturns, waReturns, fundLife);
+    feeResult = calculateFundFees(fundConfig, aumSchedule);
+
+    const newInvestibleCapital = feeResult.investibleCapital;
+    const delta = Math.abs(newInvestibleCapital - investibleCapital);
+
+    investibleCapital = newInvestibleCapital;
+    usStreamCapital = investibleCapital * usAllocation;
+    waStreamCapital = investibleCapital * waAllocation;
+
+    iterations++;
+
+    if (delta <= 1) {
+      converged = true;
+      break;
+    }
+  }
+
+  // One final deployment pass at the converged (or best-effort) investible
+  // capital, so the returned usReturns/waReturns/aumSchedule/feeResult all
+  // reflect the same investible capital figure.
+  usReturns = calculateUSStreamReturns(usStreamCapital, usConfig, fundLife, globalExitConfig);
+  waReturns = calculateWAStreamReturns(waStreamCapital, waConfig, fundLife, globalExitConfig);
+  aumSchedule = calculateAUMSchedule(usReturns, waReturns, fundLife);
+  feeResult = calculateFundFees(fundConfig, aumSchedule);
+  investibleCapital = feeResult.investibleCapital;
+  usStreamCapital = investibleCapital * usAllocation;
+  waStreamCapital = investibleCapital * waAllocation;
 
   const waterfall = calculateFundWaterfall(usReturns, waReturns, fundConfig, feeResult);
   const scheduleTable = buildFundScheduleTable(
@@ -691,7 +726,6 @@ export function calculateCompleteFundModel(fundConfig, usConfig, waConfig) {
       fundDPI: waterfall.dpi,
       netDPI: waterfall.netDPI,
       gpCarry: waterfall.gpCarry,
-      taxAmount: waterfall.taxAmount,
       lpDistributions: waterfall.lpShare,
       finalAUM: aumSchedule[aumSchedule.length - 1],
     },
