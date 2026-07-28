@@ -8,6 +8,8 @@ export default function USStreamModule({ config, onChange, results }) {
   const formatCurrency = (val) => `$${(val / 1000000).toFixed(2)}M`
   const formatPercent = (val) => `${(val * 100).toFixed(1)}%`
 
+  const derivedPikRate = Math.max(0, config.debtTotalRate - config.debtCashRate)
+
   return (
     <div className="p-6">
       <h2 className="text-xl font-bold text-gray-900 mb-6">US Search Deals</h2>
@@ -15,7 +17,6 @@ export default function USStreamModule({ config, onChange, results }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* LEFT COLUMN: INPUTS */}
         <div className="space-y-6">
-          {/* Stream Allocation */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Stream Allocation: {(config.streamAllocationPct * 100).toFixed(0)}% of Investible Capital
@@ -31,11 +32,8 @@ export default function USStreamModule({ config, onChange, results }) {
             />
           </div>
 
-          {/* Deals Per Year */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Deals Per Year
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Deals Per Year</label>
             <input
               type="number"
               min="1"
@@ -46,11 +44,8 @@ export default function USStreamModule({ config, onChange, results }) {
             />
           </div>
 
-          {/* Total Target Deals */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Total Target Deals
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Total Target Deals</label>
             <input
               type="number"
               min="1"
@@ -61,12 +56,9 @@ export default function USStreamModule({ config, onChange, results }) {
             />
           </div>
 
-          {/* Holding Period Range */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Hold Min (yrs)
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Hold Min (yrs)</label>
               <input
                 type="number"
                 min="1"
@@ -77,9 +69,7 @@ export default function USStreamModule({ config, onChange, results }) {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Hold Max (yrs)
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Hold Max (yrs)</label>
               <input
                 type="number"
                 min="1"
@@ -91,11 +81,8 @@ export default function USStreamModule({ config, onChange, results }) {
             </div>
           </div>
 
-          {/* Equity MOIC Case */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Average Equity MOIC Case
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Average Equity MOIC Case</label>
             <select
               value={config.equityMoic}
               onChange={(e) => handleChange('equityMoic', Number(e.target.value))}
@@ -110,7 +97,6 @@ export default function USStreamModule({ config, onChange, results }) {
           <hr className="border-gray-200" />
           <h3 className="font-semibold text-gray-800">Capital Instrument Structure</h3>
 
-          {/* Debt/Equity Allocation */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Debt Allocation: {(config.debtAllocation * 100).toFixed(0)}% / Equity: {((1 - config.debtAllocation) * 100).toFixed(0)}%
@@ -129,39 +115,49 @@ export default function USStreamModule({ config, onChange, results }) {
             />
           </div>
 
-          {/* Debt Rates */}
-          <div className="grid grid-cols-2 gap-4">
+          {/* CONNECTED DEBT INTEREST STRUCTURE */}
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-4">
+            <p className="text-sm font-medium text-blue-900">Debt Interest Structure (connected)</p>
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Cash Rate: {(config.debtCashRate * 100).toFixed(1)}%
+                Total Interest Rate: {(config.debtTotalRate * 100).toFixed(2)}%
               </label>
               <input
                 type="range"
                 min="0"
-                max="0.15"
-                step="0.005"
+                max="0.25"
+                step="0.0025"
+                value={config.debtTotalRate}
+                onChange={(e) => handleChange('debtTotalRate', Number(e.target.value))}
+                className="w-full"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Cash Interest Rate (portion of total): {(config.debtCashRate * 100).toFixed(2)}%
+              </label>
+              <input
+                type="range"
+                min="0"
+                max={config.debtTotalRate}
+                step="0.0025"
                 value={config.debtCashRate}
                 onChange={(e) => handleChange('debtCashRate', Number(e.target.value))}
                 className="w-full"
               />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                PIK Rate: {(config.debtPikRate * 100).toFixed(1)}%
-              </label>
-              <input
-                type="range"
-                min="0"
-                max="0.10"
-                step="0.005"
-                value={config.debtPikRate}
-                onChange={(e) => handleChange('debtPikRate', Number(e.target.value))}
-                className="w-full"
-              />
+
+            <div className="flex justify-between text-sm bg-white rounded p-3 border border-blue-100">
+              <span className="text-gray-600">PIK Rate (auto-calculated)</span>
+              <span className="font-semibold text-blue-700">{formatPercent(derivedPikRate)}</span>
             </div>
+            <p className="text-xs text-gray-500">
+              PIK = Total Rate − Cash Rate. Compounds annually, capitalized and paid with principal at exit.
+            </p>
           </div>
 
-          {/* Voting Shares Cap */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Voting Shares (max 9%): {(config.votingSharesRate * 100).toFixed(1)}%
@@ -177,7 +173,6 @@ export default function USStreamModule({ config, onChange, results }) {
             />
           </div>
 
-          {/* Preferred Equity Rate + Method */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Preferred Equity Rate: {(config.prefEquityRate * 100).toFixed(1)}%
@@ -193,9 +188,7 @@ export default function USStreamModule({ config, onChange, results }) {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Preferred Equity Method
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Preferred Equity Method</label>
             <select
               value={config.prefEquityMethod}
               onChange={(e) => handleChange('prefEquityMethod', e.target.value)}
@@ -209,7 +202,6 @@ export default function USStreamModule({ config, onChange, results }) {
           <hr className="border-gray-200" />
           <h3 className="font-semibold text-gray-800">Searcher Economics</h3>
 
-          {/* Searcher Equity Alloc */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Searcher Upfront Equity: {(config.searcherEquityAlloc * 100).toFixed(2)}%
@@ -225,11 +217,8 @@ export default function USStreamModule({ config, onChange, results }) {
             />
           </div>
 
-          {/* Searcher Debt Economics */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Searcher Debt Economics
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Searcher Debt Economics</label>
             <select
               value={config.searcherDebtEconomics}
               onChange={(e) => handleChange('searcherDebtEconomics', e.target.value)}
@@ -241,7 +230,6 @@ export default function USStreamModule({ config, onChange, results }) {
             </select>
           </div>
 
-          {/* Searcher Carry Thresholds */}
           <div className="bg-gray-50 rounded p-4 text-sm">
             <p className="font-medium text-gray-700 mb-2">Tiered Searcher Carry</p>
             <p>
@@ -256,7 +244,7 @@ export default function USStreamModule({ config, onChange, results }) {
         {/* RIGHT COLUMN: OUTPUTS */}
         <div>
           {results && (
-            <div className="bg-gray-50 rounded-lg p-6 sticky top-24">
+            <div className="bg-gray-50 rounded-lg p-6 lg:sticky lg:top-44">
               <h3 className="font-semibold text-gray-900 mb-4">US Stream Output</h3>
 
               <div className="space-y-3">
@@ -274,9 +262,7 @@ export default function USStreamModule({ config, onChange, results }) {
                 </div>
                 <div className="flex justify-between border-b border-gray-200 pb-2">
                   <span className="text-gray-600">Gross Proceeds</span>
-                  <span className="font-medium text-green-600">
-                    {formatCurrency(results.totalGrossProceeds)}
-                  </span>
+                  <span className="font-medium text-green-600">{formatCurrency(results.totalGrossProceeds)}</span>
                 </div>
                 <div className="flex justify-between border-b border-gray-200 pb-2">
                   <span className="text-gray-600">Gross IRR</span>
