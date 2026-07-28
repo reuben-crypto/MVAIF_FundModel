@@ -13,12 +13,10 @@ export default function FundFeesModule({ config, onChange, results }) {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* LEFT COLUMN: INPUTS */}
-        <div className="space-y-6">
+        <div className="space-y-6 lg:sticky lg:top-44 lg:self-start lg:max-h-[calc(100vh-11rem)] lg:overflow-y-auto lg:pr-2">
           {/* Fund Size */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Fund Size (USD)
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Fund Size (USD)</label>
             <input
               type="number"
               value={config.fundSize}
@@ -29,17 +27,15 @@ export default function FundFeesModule({ config, onChange, results }) {
 
           {/* Fund Life */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Fund Life (Years)
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Fund Life (Years)</label>
             <select
               value={config.fundLife}
               onChange={(e) => handleChange('fundLife', Number(e.target.value))}
               className="w-full border border-gray-300 rounded px-3 py-2"
             >
-              <option value={10}>10 Years</option>
-              <option value={11}>11 Years (+1)</option>
-              <option value={12}>12 Years (+2)</option>
+              <option value={10}>10 Years (Base)</option>
+              <option value={11}>11 Years (+1 Extension)</option>
+              <option value={12}>12 Years (+2 Extension)</option>
             </select>
           </div>
 
@@ -59,11 +55,8 @@ export default function FundFeesModule({ config, onChange, results }) {
             />
           </div>
 
-          {/* Management Fee Base */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Management Fee Base
-            </label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Management Fee Base</label>
             <select
               value={config.mgtFeeBase}
               onChange={(e) => handleChange('mgtFeeBase', e.target.value)}
@@ -76,9 +69,7 @@ export default function FundFeesModule({ config, onChange, results }) {
 
           {/* Step-Down Toggle */}
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium text-gray-700">
-              Step-Down Fee (Year 6+)
-            </label>
+            <label className="text-sm font-medium text-gray-700">Step-Down Fee (Year 6+)</label>
             <input
               type="checkbox"
               checked={config.stepDownActive}
@@ -104,9 +95,7 @@ export default function FundFeesModule({ config, onChange, results }) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Step-Down Base
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Step-Down Base</label>
                 <select
                   value={config.stepDownBase}
                   onChange={(e) => handleChange('stepDownBase', e.target.value)}
@@ -134,6 +123,23 @@ export default function FundFeesModule({ config, onChange, results }) {
               className="w-full"
             />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Organizational Fee Base</label>
+            <select
+              value={config.orgFeeBase}
+              onChange={(e) => handleChange('orgFeeBase', e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2"
+            >
+              <option value="committed">Committed Capital</option>
+              <option value="aum">AUM</option>
+            </select>
+            {config.orgFeeBase === 'aum' && (
+              <p className="text-xs text-amber-600 mt-1">
+                Note: Org fee is charged at fund close, before deployment — AUM is $0 at that
+                moment, so this will compute as $0. Choose Committed Capital for a non-zero org fee.
+              </p>
+            )}
+          </div>
 
           {/* OpEx Years 1-5 */}
           <div>
@@ -150,6 +156,17 @@ export default function FundFeesModule({ config, onChange, results }) {
               className="w-full"
             />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">OpEx Years 1-5 Base</label>
+            <select
+              value={config.opexYears1to5Base}
+              onChange={(e) => handleChange('opexYears1to5Base', e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2"
+            >
+              <option value="committed">Committed Capital</option>
+              <option value="aum">AUM</option>
+            </select>
+          </div>
 
           {/* OpEx Years 6-10 */}
           <div>
@@ -165,6 +182,17 @@ export default function FundFeesModule({ config, onChange, results }) {
               onChange={(e) => handleChange('opexYears6to10Rate', Number(e.target.value))}
               className="w-full"
             />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">OpEx Years 6-10 Base</label>
+            <select
+              value={config.opexYears6to10Base}
+              onChange={(e) => handleChange('opexYears6to10Base', e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2"
+            >
+              <option value="committed">Committed Capital</option>
+              <option value="aum">AUM</option>
+            </select>
           </div>
 
           {/* Hurdle Rate */}
@@ -198,6 +226,54 @@ export default function FundFeesModule({ config, onChange, results }) {
               className="w-full"
             />
           </div>
+
+          <hr className="border-gray-200" />
+          <h3 className="font-semibold text-gray-800">
+            Exit Configuration <span className="text-xs font-normal text-gray-500">(applies to both streams)</span>
+          </h3>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Exit Timing</label>
+            <select
+              value={config.exitTiming}
+              onChange={(e) => handleChange('exitTiming', e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2"
+            >
+              <option value="holding">At End of Holding Period (per deal)</option>
+              <option value="fixedYear">Fixed Year (all deals exit same year)</option>
+            </select>
+          </div>
+
+          {config.exitTiming === 'fixedYear' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Fixed Exit Year</label>
+              <input
+                type="number"
+                min="1"
+                max="20"
+                value={config.fixedExitYear || 5}
+                onChange={(e) => handleChange('fixedExitYear', Number(e.target.value))}
+                className="w-full border border-gray-300 rounded px-3 py-2"
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Exit Tranches (years to spread proceeds over)
+            </label>
+            <input
+              type="number"
+              min="1"
+              max="5"
+              value={config.exitTranches}
+              onChange={(e) => handleChange('exitTranches', Number(e.target.value))}
+              className="w-full border border-gray-300 rounded px-3 py-2"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              1 = full exit at once. 2+ = proceeds spread evenly across that many consecutive years starting at exit.
+            </p>
+          </div>
         </div>
 
         {/* RIGHT COLUMN: OUTPUTS */}
@@ -224,15 +300,11 @@ export default function FundFeesModule({ config, onChange, results }) {
                 </div>
                 <div className="flex justify-between border-b border-gray-200 pb-2">
                   <span className="text-gray-600">Total OpEx</span>
-                  <span className="font-medium text-red-600">
-                    -{formatCurrency(results.feeAnalysis.totalOpex)}
-                  </span>
+                  <span className="font-medium text-red-600">-{formatCurrency(results.feeAnalysis.totalOpex)}</span>
                 </div>
                 <div className="flex justify-between pt-2 text-lg font-bold">
                   <span>Investible Capital</span>
-                  <span className="text-green-600">
-                    {formatCurrency(results.feeAnalysis.investibleCapital)}
-                  </span>
+                  <span className="text-green-600">{formatCurrency(results.feeAnalysis.investibleCapital)}</span>
                 </div>
               </div>
 
@@ -245,6 +317,14 @@ export default function FundFeesModule({ config, onChange, results }) {
                 <div className="flex justify-between text-sm">
                   <span>West Africa Stream</span>
                   <span>{formatCurrency(results.summary.waCapital)}</span>
+                </div>
+              </div>
+
+              <div className="mt-6 pt-4 border-t border-gray-300">
+                <h4 className="font-medium text-gray-700 mb-2">Fund-Level Result</h4>
+                <div className="flex justify-between text-sm">
+                  <span>Final AUM (Year {results.summary.fundLife})</span>
+                  <span>{formatCurrency(results.summary.finalAUM)}</span>
                 </div>
               </div>
             </div>
