@@ -497,49 +497,53 @@ export function calculateFundWaterfall(usStreamReturns, waStreamReturns, fundCon
     carry = 0.20,
     fundSize = 50000000,
     fundLife = 10,
-    distributionTaxRate = 0.05,
   } = fundConfig;
 
   const usProceeds = usStreamReturns.totalGrossProceeds;
   const waProceeds = waStreamReturns.totalGrossProceeds;
   const totalGrossProceeds = usProceeds + waProceeds;
   const totalInvested = fundSize;
+  const investibleCapital = feeResult.investibleCapital;
 
   const gainAboveCapital = Math.max(0, totalGrossProceeds - totalInvested);
   const hurdleReturn = totalInvested * hurdle;
   const excessAboveHurdle = Math.max(0, gainAboveCapital - hurdleReturn);
   const gpCarry = excessAboveHurdle * carry;
 
-  // ---- GROSS: deal-level cash flows only, no fees/carry/tax ----
+  // ---- GROSS: deal-level cash flows only, no fees/carry ----
   const grossMap = {};
   Object.keys(usStreamReturns.cashFlowMap).forEach((y) => addCashFlow(grossMap, Number(y), usStreamReturns.cashFlowMap[y]));
   Object.keys(waStreamReturns.cashFlowMap).forEach((y) => addCashFlow(grossMap, Number(y), waStreamReturns.cashFlowMap[y]));
   const grossFlowArray = cashFlowMapToArray(grossMap, fundLife);
   const grossIRR = calculateIRR(grossFlowArray);
 
-  // ---- NET: + annual fees, + lump-sum carry & tax at the final year ----
+  // ---- NET: LP cash flows (investible capital out in year 0, distributions in minus fees each year, minus carry in final year) ----
   const netMap = {};
-  Object.keys(grossMap).forEach((y) => addCashFlow(netMap, Number(y), grossMap[y]));
 
-  for (let year = 0; year <= fundLife; year++) {
-    const orgFee = year === 0 ? feeResult.totalOrgFee : 0;
-    const mgtFee = year >= 1 ? feeResult.yearlyMgtFees[year - 1] : 0;
-    const opex = year >= 1 ? feeResult.yearlyOpex[year - 1] : 0;
-    addCashFlow(netMap, year, -(orgFee + mgtFee + opex));
+  // Year 0: LP puts in investible capital (all fees already deducted from the original $50M)
+  addCashFlow(netMap, 0, -investibleCapital);
+
+  // Years 1-10: distributions minus annual fees
+  for (let year = 1; year <= fundLife; year++) {
+    const distributions = Object.values(
+      Object.fromEntries(
+        Object.entries(grossMap).filter(([y]) => Number(y) === year)
+      )
+    ).reduce((s, v) => s + (v > 0 ? v : 0), 0);
+
+    const mgtFee = feeResult.yearlyMgtFees[year - 1] || 0;
+    const opex = feeResult.yearlyOpex[year - 1] || 0;
+    const lpCashFlow = distributions - mgtFee - opex;
+    addCashFlow(netMap, year, lpCashFlow);
   }
 
-  // Tax base = distributions + carry, per your instruction. Deducted lump-sum
-  // alongside carry in the fund's final year (both shown, not hidden).
-  const totalDistributions = Object.values(grossMap).reduce((s, v) => s + (v > 0 ? v : 0), 0);
-  const taxBase = totalDistributions + gpCarry;
-  const taxAmount = taxBase * distributionTaxRate;
-
-  addCashFlow(netMap, fundLife, -(gpCarry + taxAmount));
+  // Final year: deduct GP carry as a lump sum
+  addCashFlow(netMap, fundLife, -gpCarry);
 
   const netFlowArray = cashFlowMapToArray(netMap, fundLife);
   const netIRR = calculateIRR(netFlowArray);
 
-  const lpShare = totalGrossProceeds - gpCarry - feeResult.totalFees - taxAmount;
+  const lpShare = totalGrossProceeds - gpCarry - feeResult.totalFees;
   const fundDPI = totalGrossProceeds / totalInvested;
   const netDPI = lpShare / totalInvested;
 
@@ -552,8 +556,6 @@ export function calculateFundWaterfall(usStreamReturns, waStreamReturns, fundCon
     lpShare,
     gpCarry,
     gpCarryPercentage: carry,
-    distributionTaxRate,
-    taxAmount,
     dpi: fundDPI,
     netDPI,
     irr: grossIRR,
@@ -570,7 +572,7 @@ export function calculateFundWaterfall(usStreamReturns, waStreamReturns, fundCon
 // 9. ANNUAL SCHEDULE TABLE
 // ============================================================================
 
-export function buildFundScheduleTable(usReturns, waReturns, feeResult, aumSchedule, fundLife, gpCarry, taxAmount) {
+export function buildFundScheduleTable(usReturns, waReturns, feeResult, aumSchedule, fundLife, gpCarry) {
   const allDeals = [
     ...usReturns.deals.map((d) => ({ ...d, stream: 'us' })),
     ...waReturns.deals.map((d) => ({ ...d, stream: 'wa' })),
@@ -606,7 +608,6 @@ export function buildFundScheduleTable(usReturns, waReturns, feeResult, aumSched
 
     const isFinalYear = year === fundLife;
     const carryDeduction = isFinalYear ? gpCarry : 0;
-    const taxDeduction = isFinalYear ? taxAmount : 0;
 
     rows.push({
       year,
@@ -626,8 +627,7 @@ export function buildFundScheduleTable(usReturns, waReturns, feeResult, aumSched
       unrealizedFV,
       runningAUM: aumSchedule[year],
       carryDeduction,
-      taxDeduction,
-      netCashFlow: distributions - capitalDeployed - feesThisYear - carryDeduction - taxDeduction,
+      netCashFlow: distributions - capitalDeployed - feesThisYear - carryDeduction,
     });
   }
 
@@ -668,8 +668,7 @@ export function calculateCompleteFundModel(fundConfig, usConfig, waConfig) {
     feeResult,
     aumSchedule,
     fundLife,
-    waterfall.gpCarry,
-    waterfall.taxAmount
+    waterfall.gpCarry
   );
 
   return {
@@ -719,7 +718,6 @@ export function testMathEngine() {
     opexYears6to10Base: 'committed',
     hurdle: 0.06,
     carry: 0.20,
-    distributionTaxRate: 0.05,
     exitTiming: 'holding',
     fixedExitYear: null,
     exitTranches: 1,
@@ -761,16 +759,16 @@ export function testMathEngine() {
 
   const model = calculateCompleteFundModel(fundConfig, usConfig, waConfig);
 
-  console.log(`Investible Capital: $${(model.summary.investibleCapital / 1e6).toFixed(2)}M\n`);
+  console.log(`Investible Capital: $${(model.summary.investibleCapital / 1e6).toFixed(2)}M`);
+  console.log(`Total Fees (Org + Mgt + OpEx): $${(model.summary.totalFees / 1e6).toFixed(2)}M\n`);
 
   console.log(`Fund Gross IRR: ${(model.summary.grossIRR * 100).toFixed(1)}%`);
-  console.log(`Fund Net IRR:   ${(model.summary.netIRR * 100).toFixed(1)}%  (should be lower than gross)\n`);
+  console.log(`Fund Net IRR:   ${(model.summary.netIRR * 100).toFixed(1)}%  (after all fee drag + carry)\n`);
 
   console.log(`Fund Gross DPI: ${model.summary.fundDPI.toFixed(2)}x`);
   console.log(`Fund Net DPI:   ${model.summary.netDPI.toFixed(2)}x\n`);
 
   console.log(`GP Carry: $${(model.summary.gpCarry / 1e6).toFixed(2)}M`);
-  console.log(`Tax on Distributions + Carry (5%): $${(model.summary.taxAmount / 1e6).toFixed(2)}M`);
   console.log(`LP Net Distributions: $${(model.summary.lpDistributions / 1e6).toFixed(2)}M\n`);
 
   console.log('Final year row of schedule table:');
