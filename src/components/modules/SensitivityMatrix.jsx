@@ -1,45 +1,42 @@
 import React, { useState, useMemo } from 'react'
-import {
-  calculateFundFees,
-  calculateUSStreamReturns,
-  calculateWAStreamReturns,
-  calculateFundWaterfall,
-} from '../../utils/mathEngine'
+import { calculateUSStreamReturns, calculateWAStreamReturns, calculateFundWaterfall, calculateFundFees, calculateAUMSchedule } from '../../utils/mathEngine'
 
-export default function SensitivityMatrix({ results }) {
-  const [lockedStream, setLockedStream] = useState('wa') // 'us' or 'wa' - which stream stays constant
+export default function SensitivityMatrix({ fundConfig, usConfig, waConfig, results }) {
+  const [lockedStream, setLockedStream] = useState('wa')
   const [lockedMoic, setLockedMoic] = useState(2.0)
 
-  // Ranges to test on the variable stream
   const moicRange = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
 
   const matrixData = useMemo(() => {
-    if (!results) return []
+    if (!results || !fundConfig || !usConfig || !waConfig) return []
 
-    const { feeAnalysis, summary } = results
-    const fundConfig = {
-      fundSize: feeAnalysis.fundSize,
-      fundLife: feeAnalysis.fundLife,
-      hurdle: 0.06,
-      carry: 0.20,
+    const fundLife = fundConfig.fundLife || 10
+    const globalExitConfig = {
+      exitTiming: fundConfig.exitTiming || 'holding',
+      fixedExitYear: fundConfig.fixedExitYear || null,
+      tranches: fundConfig.exitTranches || 1,
     }
 
+    const { usCapital, waCapital } = results.summary
+
     return moicRange.map((variableMoic) => {
-      let usConfig, waConfig, usReturns, waReturns
+      let testUsConfig = usConfig
+      let testWaConfig = waConfig
 
       if (lockedStream === 'wa') {
-        // WA is locked, US varies
-        waConfig = { dealCap: 6, baseMoic: lockedMoic, holdingYearsMin: 4, holdingYearsMax: 6 }
-        usConfig = { totalDeals: 5, equityMoic: variableMoic, holdingYearsMin: 4, holdingYearsMax: 6 }
+        testWaConfig = { ...waConfig, baseMoic: lockedMoic }
+        testUsConfig = { ...usConfig, equityMoic: variableMoic }
       } else {
-        // US is locked, WA varies
-        usConfig = { totalDeals: 5, equityMoic: lockedMoic, holdingYearsMin: 4, holdingYearsMax: 6 }
-        waConfig = { dealCap: 6, baseMoic: variableMoic, holdingYearsMin: 4, holdingYearsMax: 6 }
+        testUsConfig = { ...usConfig, equityMoic: lockedMoic }
+        testWaConfig = { ...waConfig, baseMoic: variableMoic }
       }
 
-      usReturns = calculateUSStreamReturns(summary.usCapital, usConfig)
-      waReturns = calculateWAStreamReturns(summary.waCapital, waConfig)
-      const waterfall = calculateFundWaterfall(usReturns, waReturns, fundConfig)
+      const usReturns = calculateUSStreamReturns(usCapital, testUsConfig, fundLife, globalExitConfig)
+      const waReturns = calculateWAStreamReturns(waCapital, testWaConfig, fundLife, globalExitConfig)
+
+      const aumSchedule = calculateAUMSchedule(usReturns, waReturns, fundLife)
+      const feeResult = calculateFundFees(fundConfig, aumSchedule)
+      const waterfall = calculateFundWaterfall(usReturns, waReturns, fundConfig, feeResult)
 
       return {
         variableMoic,
@@ -49,7 +46,7 @@ export default function SensitivityMatrix({ results }) {
         status: waterfall.dpi >= 1.5 ? 'green' : waterfall.dpi >= 1.0 ? 'yellow' : 'red',
       }
     })
-  }, [results, lockedStream, lockedMoic])
+  }, [results, fundConfig, usConfig, waConfig, lockedStream, lockedMoic])
 
   const statusColors = {
     green: 'bg-green-100 text-green-800 border-green-300',
@@ -67,12 +64,9 @@ export default function SensitivityMatrix({ results }) {
     <div className="p-6">
       <h2 className="text-xl font-bold text-gray-900 mb-6">Sensitivity Matrix</h2>
 
-      {/* Controls */}
       <div className="bg-gray-50 rounded-lg p-4 mb-6 flex flex-wrap gap-6 items-end">
         <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Hold Constant
-          </label>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Hold Constant</label>
           <select
             value={lockedStream}
             onChange={(e) => setLockedStream(e.target.value)}
@@ -99,13 +93,14 @@ export default function SensitivityMatrix({ results }) {
         </div>
 
         <div className="text-sm text-gray-600">
-          Showing: <span className="font-medium">{lockedStream === 'wa' ? 'US' : 'West Africa'} Stream MOIC</span> varying,
-          with <span className="font-medium">{lockedStream === 'wa' ? 'West Africa' : 'US'}</span> held at {lockedMoic.toFixed(1)}x
+          Showing: <span className="font-medium">{lockedStream === 'wa' ? 'US' : 'West Africa'} Stream MOIC</span>{' '}
+          varying, with <span className="font-medium">{lockedStream === 'wa' ? 'West Africa' : 'US'}</span> held at{' '}
+          {lockedMoic.toFixed(1)}x. All other current settings (debt rates, fees, exit config) are preserved from
+          your live inputs.
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="flex gap-4 mb-4 text-sm">
+      <div className="flex gap-4 mb-4 text-sm flex-wrap">
         <div className="flex items-center gap-2">
           <div className="w-4 h-4 bg-green-100 border border-green-300 rounded"></div>
           <span>Hurdle Outperformance (Carry Generated)</span>
@@ -120,8 +115,7 @@ export default function SensitivityMatrix({ results }) {
         </div>
       </div>
 
-      {/* Matrix Table */}
-      {matrixData.length > 0 && (
+      {matrixData.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
@@ -146,12 +140,8 @@ export default function SensitivityMatrix({ results }) {
             </tbody>
           </table>
         </div>
-      )}
-
-      {!results && (
-        <p className="text-gray-500 text-center py-12">
-          Configure Fund Fees, US Stream, and West Africa Stream to see sensitivity analysis.
-        </p>
+      ) : (
+        <p className="text-gray-500 text-center py-12">Loading sensitivity data...</p>
       )}
     </div>
   )
