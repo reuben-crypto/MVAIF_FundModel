@@ -122,19 +122,17 @@ export function buildUSDealCashFlows(deal, config, exitConfig) {
   addCashFlow(cashFlows, investmentYear, -invested);
 
   const cashInterestPerYear = debtTranche * debtCashRate;
-  for (let y = investmentYear + 1; y <= exitYear; y++) {
+  for (let y = investmentYear; y <= exitYear; y++) {
     addCashFlow(cashFlows, y, cashInterestPerYear);
   }
 
   const pikAccrued = debtTranche * (Math.pow(1 + debtPikRate, holdingYears) - 1);
   const debtExitAmount = debtTranche + pikAccrued;
 
-  const prefResult = compoundPreferredEquity(prefAmt, prefEquityRate, holdingYears, prefEquityMethod);
-  const prefExitAmount = prefResult.totalAccrued;
+  // Equity exit: apply MOIC to the entire equity tranche (not split into voting/pref)
+  const equityExitAmount = equityTranche * equityMoic;
 
-  const votingExitAmount = votingAmt * equityMoic;
-
-  const totalExitAmount = debtExitAmount + prefExitAmount + votingExitAmount;
+  const totalExitAmount = debtExitAmount + equityExitAmount;
   const perTranche = totalExitAmount / trancheYears.length;
   trancheYears.forEach((y) => addCashFlow(cashFlows, y, perTranche));
 
@@ -146,18 +144,14 @@ export function buildUSDealCashFlows(deal, config, exitConfig) {
     invested,
     debtTranche,
     equityTranche,
-    votingAmt,
-    prefAmt,
     debtTotalRate,
     debtCashRate,
     debtPikRate,
-    prefEquityRate,
-    prefEquityMethod,
+    equityMoic,
     cashInterestPerYear,
     pikAccrued,
     debtExitAmount,
-    prefExitAmount,
-    votingExitAmount,
+    equityExitAmount,
     totalExitAmount,
     trancheYears,
     cashFlows,
@@ -235,16 +229,12 @@ export function getDealUnrealizedValue(dealCF, year, stream) {
   const yearsHeld = year - dealCF.investmentYear;
 
   if (stream === 'us') {
+    // Debt unrealized: PIK compounds
     const debtUnrealized = dealCF.debtTranche * Math.pow(1 + dealCF.debtPikRate, yearsHeld);
-    const prefUnrealized = compoundPreferredEquity(
-      dealCF.prefAmt,
-      dealCF.prefEquityRate,
-      yearsHeld,
-      dealCF.prefEquityMethod
-    ).totalAccrued;
-    const votingUnrealized =
-      dealCF.votingAmt + (dealCF.votingExitAmount - dealCF.votingAmt) * (yearsHeld / dealCF.holdingYears);
-    return debtUnrealized + prefUnrealized + votingUnrealized;
+    // Equity unrealized: straight-line ramp from equity investment to exit value
+    const equityUnrealized =
+      dealCF.equityTranche + (dealCF.equityExitAmount - dealCF.equityTranche) * (yearsHeld / dealCF.holdingYears);
+    return debtUnrealized + equityUnrealized;
   } else {
     return dealCF.invested + (dealCF.totalExitAmount - dealCF.invested) * (yearsHeld / dealCF.holdingYears);
   }
@@ -363,7 +353,7 @@ export function calculateUSStreamReturns(streamCapital, config, fundLife, exitCo
     perDealMetrics: dealCashFlows[0]
       ? {
           debtReturns: dealCashFlows[0].debtExitAmount,
-          equityReturns: dealCashFlows[0].prefExitAmount + dealCashFlows[0].votingExitAmount,
+          equityReturns: dealCashFlows[0].equityExitAmount,
           totalProceeds: dealCashFlows[0].totalExitAmount,
           dealMoic: dealCashFlows[0].totalExitAmount / dealCashFlows[0].invested,
         }
