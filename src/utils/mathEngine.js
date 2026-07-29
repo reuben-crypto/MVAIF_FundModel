@@ -250,16 +250,16 @@ export function calculateFundFees(fundConfig, aumSchedule = null) {
     fundLife = 10,
     mgtFeeRate = 0.02,
     mgtFeeBase = 'committed',
-    stepDownActive = false,
+    stepDownActive = true,
     stepDownRate = 0.015,
-    stepDownBase = 'committed',
+    stepDownBase = 'aum',
     stepDownStartYear = 6,
     orgFeeRate = 0.01,
     orgFeeBase = 'committed',
     opexYears1to5Rate = 0.005,
     opexYears1to5Base = 'committed',
     opexYears6to10Rate = 0.005,
-    opexYears6to10Base = 'committed',
+    opexYears6to10Base = 'aum',
   } = fundConfig;
 
   const getBase = (basePref, year) => {
